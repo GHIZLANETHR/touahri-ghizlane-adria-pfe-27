@@ -1,0 +1,40 @@
+server:
+  port: 8083
+
+spring:
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+
+      chat:
+        options:
+          model: llama3.2
+          temperature: 0.2
+
+    mcp:
+      client:
+        enabled: true
+        initialized: true
+        type: SYNC
+        request-timeout: 20s
+
+        toolcallback:
+          enabled: true
+
+        streamable-http:
+          connections:
+            account-server:
+              url: http://localhost:8081
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info

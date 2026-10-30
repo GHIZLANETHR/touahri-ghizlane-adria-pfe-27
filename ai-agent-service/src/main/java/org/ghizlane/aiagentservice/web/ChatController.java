@@ -3,9 +3,7 @@ package src.main.java.org.ghizlane.aiagentservice.web;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.web.bind.annotation.*;
-
 import java.util.Map;
-
 @RestController
 @RequestMapping("/api/chat")
 public class ChatController {
