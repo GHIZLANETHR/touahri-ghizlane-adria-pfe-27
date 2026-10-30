@@ -3,12 +3,14 @@ package org.ghizlane.transactionservice.service;
 import org.ghizlane.transactionservice.client.AccountClient;
 import org.ghizlane.transactionservice.domain.BankTransaction;
 import org.ghizlane.transactionservice.dto.*;
+import org.ghizlane.transactionservice.event.*;
 import org.ghizlane.transactionservice.repository.TransactionRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -18,16 +20,21 @@ public class TransactionService {
 
     private final TransactionRepository repository;
     private final AccountClient accountClient;
+    private final TransactionEventProducer producer;
 
-    @Value("${bank.transaction.max-amount}")
-    private BigDecimal maximumAmount;
+    private final BigDecimal maximumAmount;
 
     public TransactionService(
             TransactionRepository repository,
-            AccountClient accountClient
+            AccountClient accountClient,
+            TransactionEventProducer producer,
+            @Value("${bank.transaction.max-amount}")
+            BigDecimal maximumAmount
     ) {
         this.repository = repository;
         this.accountClient = accountClient;
+        this.producer = producer;
+        this.maximumAmount = maximumAmount;
     }
 
     public BankTransaction create(
@@ -35,17 +42,27 @@ public class TransactionService {
     ) {
         validateMaximumAmount(request.amount());
 
+        /*
+         * Appel HTTP à account-service avec OpenFeign.
+         */
         AccountResponse account =
                 accountClient.findById(request.accountId());
 
-        validateAccount(account, request.currency());
+        validateAccount(
+                account,
+                request.currency()
+        );
 
-        if (account.balance().compareTo(request.amount()) < 0) {
+        if (account.balance()
+                .compareTo(request.amount()) < 0) {
             throw new IllegalArgumentException(
                     "Insufficient balance"
             );
         }
 
+        /*
+         * Débit du compte par appel OpenFeign.
+         */
         accountClient.debit(
                 request.accountId(),
                 new BalanceRequest(request.amount())
@@ -62,14 +79,50 @@ public class TransactionService {
         );
         transaction.setCountry(request.country());
 
-        return repository.save(transaction);
+        /*
+         * Enregistrement H2.
+         */
+        BankTransaction saved =
+                repository.save(transaction);
+
+        /*
+         * Publication Kafka après l’enregistrement.
+         * C’est exactement ici qu’il faut mettre
+         * producer.publish(...).
+         */
+        producer.publish(
+                new TransactionCreatedEvent(
+                        UUID.randomUUID(),
+                        "TransactionCreated",
+                        saved.getId(),
+                        saved.getAccountId(),
+                        saved.getAmount(),
+                        saved.getCurrency(),
+                        Instant.now()
+                )
+        );
+
+        return saved;
+    }
+
+    @Transactional(readOnly = true)
+    public List<BankTransaction> findAll() {
+        return repository.findAll();
+    }
+
+    @Transactional(readOnly = true)
+    public List<BankTransaction> findByAccount(
+            UUID accountId
+    ) {
+        return repository.findByAccountId(accountId);
     }
 
     public void transfer(TransferRequest request) {
         if (request.sourceAccountId()
                 .equals(request.destinationAccountId())) {
             throw new IllegalArgumentException(
-                    "Source and destination must be different"
+                    "Source and destination accounts "
+                            + "must be different"
             );
         }
 
@@ -86,16 +139,21 @@ public class TransactionService {
                 );
 
         validateAccount(source, source.currency());
-        validateAccount(destination, destination.currency());
+        validateAccount(
+                destination,
+                destination.currency()
+        );
 
-        if (!source.currency()
-                .equalsIgnoreCase(destination.currency())) {
+        if (!source.currency().equalsIgnoreCase(
+                destination.currency()
+        )) {
             throw new IllegalArgumentException(
                     "Accounts must use the same currency"
             );
         }
 
-        if (source.balance().compareTo(request.amount()) < 0) {
+        if (source.balance()
+                .compareTo(request.amount()) < 0) {
             throw new IllegalArgumentException(
                     "Insufficient balance"
             );
@@ -112,6 +170,10 @@ public class TransactionService {
                     new BalanceRequest(request.amount())
             );
         } catch (RuntimeException exception) {
+            /*
+             * Compensation simple :
+             * si le crédit échoue, on recrédite la source.
+             */
             accountClient.credit(
                     source.id(),
                     new BalanceRequest(request.amount())
@@ -121,19 +183,9 @@ public class TransactionService {
         }
     }
 
-    @Transactional(readOnly = true)
-    public List<BankTransaction> findAll() {
-        return repository.findAll();
-    }
-
-    @Transactional(readOnly = true)
-    public List<BankTransaction> findByAccount(
-            UUID accountId
+    private void validateMaximumAmount(
+            BigDecimal amount
     ) {
-        return repository.findByAccountId(accountId);
-    }
-
-    private void validateMaximumAmount(BigDecimal amount) {
         if (amount.compareTo(maximumAmount) > 0) {
             throw new IllegalArgumentException(
                     "Maximum transaction amount is "
@@ -144,7 +196,7 @@ public class TransactionService {
 
     private void validateAccount(
             AccountResponse account,
-            String currency
+            String requestedCurrency
     ) {
         if (!"ACTIVE".equals(account.status())) {
             throw new IllegalArgumentException(
@@ -152,9 +204,12 @@ public class TransactionService {
             );
         }
 
-        if (!account.currency().equalsIgnoreCase(currency)) {
+        if (!account.currency().equalsIgnoreCase(
+                requestedCurrency
+        )) {
             throw new IllegalArgumentException(
-                    "Currency does not match account currency"
+                    "Currency does not match "
+                            + "the account currency"
             );
         }
     }
