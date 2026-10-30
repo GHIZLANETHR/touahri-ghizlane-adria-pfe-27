@@ -1,0 +1,43 @@
+server:
+  port: 8081
+
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/account-db
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  graphql:
+    graphiql:
+      enabled: true
+
+  ai:
+    mcp:
+      server:
+        name: account-mcp-server
+        protocol: STREAMABLE
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
